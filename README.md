@@ -20,7 +20,7 @@ For `PACKAGE_MANAGER=pip`:
 
 For `PACKAGE_MANAGER=conda`:
 
-- `conda-requirements.txt` **or** `environment.yml` **or** `environment.yaml`
+- Exactly one of: `conda-requirements.txt` **or** `environment.yml` **or** `environment.yaml`
 
 The sample request folder includes `requirements.txt`, `conda-requirements.txt`, and `environment.yml` so you can switch `PACKAGE_MANAGER` and test either path.
 
@@ -45,6 +45,7 @@ Environment variables required at runtime:
 Optional in `request.properties`:
 
 - `PYTHON_COMMAND` (defaults to `python`, used for pip workflow)
+- `CONDA_ENV_NAME` (defaults to `base`, used for conda workflow)
 
 ## How it works
 
@@ -53,7 +54,7 @@ Optional in `request.properties`:
 3. Builds an ephemeral `pip.conf` and `.condarc` with Artifactory credentials.
 4. Pulls the container image.
 5. For pip requests, runs `pip install -r requirements.txt` inside the container image.
-6. For conda requests, runs `conda install --file conda-requirements.txt` or `conda env update -n base -f environment.yml` inside the container image.
+6. For conda requests, runs `conda install -n <env> --file conda-requirements.txt` or `conda env update -n <env> -f environment.yml` inside the container image (`<env>` defaults to `base` or `CONDA_ENV_NAME`).
 7. Captures runtime info and resolved packages to `outputs/<REQUEST_ID>/`.
 
 
