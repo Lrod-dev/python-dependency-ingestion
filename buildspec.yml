@@ -1,0 +1,34 @@
+version: 0.2
+
+env:
+  variables:
+    REQUEST_DIR: "requests/req-001-sample-training"
+    ARTIFACTORY_HOST: "artifactory.example.com"
+  secrets-manager:
+    ARTIFACTORY_USER: "mlops/artifactory/python-rw:username"
+    ARTIFACTORY_TOKEN: "mlops/artifactory/python-rw:token"
+
+phases:
+  pre_build:
+    commands:
+      - set -euo pipefail
+      - echo "Starting container-image dependency ingestion"
+      - source "${REQUEST_DIR}/request.properties"
+      - echo "Request: ${REQUEST_ID}"
+      - echo "Workload: ${WORKLOAD_TYPE}"
+      - echo "Container image: ${CONTAINER_IMAGE}"
+
+  build:
+    commands:
+      - chmod +x ./scripts/ingest_container_image_pip.sh
+      - ./scripts/ingest_container_image_pip.sh "${REQUEST_DIR}"
+
+artifacts:
+  files:
+    - requests/**/*
+    - outputs/**/request-metadata.json
+    - outputs/**/resolved-requirements.txt
+    - outputs/**/resolved-environment.yml
+    - outputs/**/runtime-ingestion.log
+    - outputs/**/image-python-info.txt
+    - outputs/**/ingestion-result.json
