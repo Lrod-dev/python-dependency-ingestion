@@ -82,7 +82,7 @@ Optional in `request.properties`:
 ## Run in AWS CodeBuild
 
 1. Create a CodeBuild project from this repository.
-2. Enable **Privileged** mode (Docker required for `docker pull`/`docker run`).
+2. Enable **Privileged** mode in the CodeBuild environment settings (`Environment -> Additional configuration -> Privileged`). This allows the build container to start Docker so the script can run `docker pull` and `docker run` against the target container image.
 3. Use `buildspec.yml` from the repo root.
 4. Set env vars/secrets in the project:
    - `REQUEST_DIR` (example: `requests/req-001-sample-training`)
