@@ -13,11 +13,6 @@ if [[ ! -f "${REQUEST_DIR}/request.properties" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${REQUEST_DIR}/requirements.txt" ]]; then
-  echo "Missing required file: ${REQUEST_DIR}/requirements.txt"
-  exit 1
-fi
-
 source "${REQUEST_DIR}/request.properties"
 
 : "${REQUEST_ID:?REQUEST_ID is required}"
@@ -29,9 +24,28 @@ source "${REQUEST_DIR}/request.properties"
 : "${ARTIFACTORY_USER:?ARTIFACTORY_USER is required}"
 : "${ARTIFACTORY_TOKEN:?ARTIFACTORY_TOKEN is required}"
 
-if [[ "${PACKAGE_MANAGER}" != "pip" ]]; then
-  echo "Only PACKAGE_MANAGER=pip is supported in this MVP"
+if [[ "${PACKAGE_MANAGER}" != "pip" && "${PACKAGE_MANAGER}" != "conda" ]]; then
+  echo "Only PACKAGE_MANAGER=pip or PACKAGE_MANAGER=conda is supported"
   exit 1
+fi
+
+if [[ "${PACKAGE_MANAGER}" == "pip" && ! -f "${REQUEST_DIR}/requirements.txt" ]]; then
+  echo "Missing required file for pip: ${REQUEST_DIR}/requirements.txt"
+  exit 1
+fi
+
+CONDA_REQUIREMENTS_FILE=""
+if [[ "${PACKAGE_MANAGER}" == "conda" ]]; then
+  if [[ -f "${REQUEST_DIR}/conda-requirements.txt" ]]; then
+    CONDA_REQUIREMENTS_FILE="conda-requirements.txt"
+  elif [[ -f "${REQUEST_DIR}/environment.yml" ]]; then
+    CONDA_REQUIREMENTS_FILE="environment.yml"
+  elif [[ -f "${REQUEST_DIR}/environment.yaml" ]]; then
+    CONDA_REQUIREMENTS_FILE="environment.yaml"
+  else
+    echo "Missing conda dependency file. Provide one of: conda-requirements.txt, environment.yml, environment.yaml"
+    exit 1
+  fi
 fi
 
 PYTHON_COMMAND="${PYTHON_COMMAND:-python}"
@@ -47,12 +61,20 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 PIP_CONF="${TMP_DIR}/pip.conf"
+CONDARC="${TMP_DIR}/condarc"
 
 cat > "${PIP_CONF}" <<EOF_INNER
 [global]
 index-url = https://${ARTIFACTORY_USER}:${ARTIFACTORY_TOKEN}@${ARTIFACTORY_HOST}/artifactory/api/pypi/${ARTIFACTORY_REPO}/simple
 trusted-host = ${ARTIFACTORY_HOST}
 disable-pip-version-check = true
+EOF_INNER
+
+cat > "${CONDARC}" <<EOF_INNER
+channels:
+  - https://${ARTIFACTORY_USER}:${ARTIFACTORY_TOKEN}@${ARTIFACTORY_HOST}/artifactory/api/conda/${ARTIFACTORY_REPO}
+channel_priority: flexible
+always_yes: true
 EOF_INNER
 
 echo "Request ID: ${REQUEST_ID}"
@@ -67,34 +89,71 @@ docker pull "${CONTAINER_IMAGE}"
 
 echo "Running dependency ingestion inside container image..."
 
-docker run --rm \
-  -v "$PWD/${REQUEST_DIR}/requirements.txt:/tmp/requirements.txt:ro" \
-  -v "$PWD/${OUTPUT_DIR}:/tmp/output" \
-  -v "${PIP_CONF}:/etc/pip.conf:ro" \
-  "${CONTAINER_IMAGE}" \
-  bash -lc "
-    set -euo pipefail
+if [[ "${PACKAGE_MANAGER}" == "pip" ]]; then
+  docker run --rm \
+    -v "$PWD/${REQUEST_DIR}/requirements.txt:/tmp/requirements.txt:ro" \
+    -v "$PWD/${OUTPUT_DIR}:/tmp/output" \
+    -v "${PIP_CONF}:/etc/pip.conf:ro" \
+    "${CONTAINER_IMAGE}" \
+    bash -lc "
+      set -euo pipefail
 
-    echo 'Runtime Python information'
-    ${PYTHON_COMMAND} --version
-    ${PYTHON_COMMAND} -m pip --version
-    which ${PYTHON_COMMAND} || true
-
-    {
-      echo 'PYTHON_VERSION:'
+      echo 'Runtime Python information'
       ${PYTHON_COMMAND} --version
-      echo 'PIP_VERSION:'
       ${PYTHON_COMMAND} -m pip --version
-      echo 'PYTHON_PATH:'
       which ${PYTHON_COMMAND} || true
-    } > /tmp/output/image-python-info.txt
 
-    echo 'Installing requirements from Artifactory inside container image...'
-    ${PYTHON_COMMAND} -m pip install -r /tmp/requirements.txt
+      {
+        echo 'PYTHON_VERSION:'
+        ${PYTHON_COMMAND} --version
+        echo 'PIP_VERSION:'
+        ${PYTHON_COMMAND} -m pip --version
+        echo 'PYTHON_PATH:'
+        which ${PYTHON_COMMAND} || true
+      } > /tmp/output/image-python-info.txt
 
-    echo 'Capturing resolved environment from container image...'
-    ${PYTHON_COMMAND} -m pip freeze > /tmp/output/resolved-requirements.txt
-  " 2>&1 | tee "${OUTPUT_DIR}/runtime-ingestion.log"
+      echo 'Installing pip requirements from Artifactory inside container image...'
+      ${PYTHON_COMMAND} -m pip install -r /tmp/requirements.txt
+
+      echo 'Capturing resolved pip environment from container image...'
+      ${PYTHON_COMMAND} -m pip freeze > /tmp/output/resolved-requirements.txt
+    " 2>&1 | tee "${OUTPUT_DIR}/runtime-ingestion.log"
+else
+  docker run --rm \
+    -v "$PWD/${REQUEST_DIR}/${CONDA_REQUIREMENTS_FILE}:/tmp/conda-input:ro" \
+    -v "$PWD/${OUTPUT_DIR}:/tmp/output" \
+    -v "${CONDARC}:/root/.condarc:ro" \
+    "${CONTAINER_IMAGE}" \
+    bash -lc "
+      set -euo pipefail
+      CONDA_INPUT_FILE=${CONDA_REQUIREMENTS_FILE}
+
+      if ! command -v conda >/dev/null 2>&1; then
+        echo 'Conda is not installed in this container image'
+        exit 1
+      fi
+
+      echo 'Runtime Conda information'
+      conda --version
+      conda info
+
+      {
+        echo 'CONDA_VERSION:'
+        conda --version
+      } > /tmp/output/image-python-info.txt
+
+      echo 'Installing conda requirements from Artifactory inside container image...'
+      if [[ "${CONDA_INPUT_FILE}" == *.yml || "${CONDA_INPUT_FILE}" == *.yaml ]]; then
+        conda env update -n base -f /tmp/conda-input
+      else
+        conda install --file /tmp/conda-input
+      fi
+
+      echo 'Capturing resolved conda environment from container image...'
+      conda list > /tmp/output/resolved-requirements.txt
+      conda env export -n base > /tmp/output/resolved-environment.yml
+    " 2>&1 | tee "${OUTPUT_DIR}/runtime-ingestion.log"
+fi
 
 cat > "${OUTPUT_DIR}/ingestion-result.json" <<EOF_INNER
 {
@@ -108,7 +167,8 @@ cat > "${OUTPUT_DIR}/ingestion-result.json" <<EOF_INNER
   "outputs": {
     "resolved_requirements": "${OUTPUT_DIR}/resolved-requirements.txt",
     "runtime_ingestion_log": "${OUTPUT_DIR}/runtime-ingestion.log",
-    "image_python_info": "${OUTPUT_DIR}/image-python-info.txt"
+    "image_python_info": "${OUTPUT_DIR}/image-python-info.txt",
+    "resolved_conda_environment": "${OUTPUT_DIR}/resolved-environment.yml"
   }
 }
 EOF_INNER

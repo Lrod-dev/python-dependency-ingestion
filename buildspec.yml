@@ -28,6 +28,7 @@ artifacts:
     - requests/**/*
     - outputs/**/request-metadata.json
     - outputs/**/resolved-requirements.txt
+    - outputs/**/resolved-environment.yml
     - outputs/**/runtime-ingestion.log
     - outputs/**/image-python-info.txt
     - outputs/**/ingestion-result.json
