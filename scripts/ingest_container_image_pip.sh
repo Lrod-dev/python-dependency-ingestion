@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Resolve and validate the request directory input first so failures are immediate and clear.
 REQUEST_DIR="${1:?Usage: ingest_container_image_pip.sh <request-dir>}"
 
 if [[ ! -d "${REQUEST_DIR}" ]]; then
@@ -15,6 +16,7 @@ fi
 
 source "${REQUEST_DIR}/request.properties"
 
+# Validate required request and runtime variables loaded from request.properties/env.
 : "${REQUEST_ID:?REQUEST_ID is required}"
 : "${WORKLOAD_TYPE:?WORKLOAD_TYPE is required}"
 : "${CONTAINER_IMAGE:?CONTAINER_IMAGE is required}"
@@ -51,6 +53,7 @@ write_result_json() {
 EOF_INNER
 }
 
+# Always emit a structured failure result when any command errors.
 on_error() {
   write_result_json
 }
@@ -69,6 +72,7 @@ fi
 
 CONDA_REQUIREMENTS_FILE=""
 if [[ "${PACKAGE_MANAGER}" == "conda" ]]; then
+  # Enforce exactly one conda spec file to avoid ambiguous installs.
   CONDA_FILE_COUNT=0
   [[ -f "${REQUEST_DIR}/conda-requirements.txt" ]] && CONDA_FILE_COUNT=$((CONDA_FILE_COUNT + 1))
   [[ -f "${REQUEST_DIR}/environment.yml" ]] && CONDA_FILE_COUNT=$((CONDA_FILE_COUNT + 1))
@@ -127,6 +131,7 @@ echo "Artifactory repo: ${ARTIFACTORY_REPO}"
 echo "Python command: ${PYTHON_COMMAND}"
 echo "Conda env name: ${CONDA_ENV_NAME}"
 
+# Preflight host requirements before attempting container execution.
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker CLI is required but was not found in PATH"
   ERROR_STEP="preflight"
@@ -141,6 +146,7 @@ ERROR_STEP="docker_run"
 echo "Running dependency ingestion inside container image..."
 
 if [[ "${PACKAGE_MANAGER}" == "pip" ]]; then
+  # Pip workflow: install request requirements and capture resolved environment.
   docker run --rm \
     -v "$PWD/${REQUEST_DIR}/requirements.txt:/tmp/requirements.txt:ro" \
     -v "$PWD/${OUTPUT_DIR}:/tmp/output" \
@@ -170,6 +176,7 @@ if [[ "${PACKAGE_MANAGER}" == "pip" ]]; then
       ${PYTHON_COMMAND} -m pip freeze > /tmp/output/resolved-requirements.txt
     " 2>&1 | tee "${OUTPUT_DIR}/runtime-ingestion.log"
 else
+  # Conda workflow: install from one conda spec and export resolved packages/env.
   docker run --rm \
     -v "$PWD/${REQUEST_DIR}/${CONDA_REQUIREMENTS_FILE}:/tmp/conda-input:ro" \
     -v "$PWD/${OUTPUT_DIR}:/tmp/output" \
